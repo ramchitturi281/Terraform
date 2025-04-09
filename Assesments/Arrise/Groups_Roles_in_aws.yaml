@@ -1,0 +1,361 @@
+# provider.tf
+provider "aws" {
+  region = "us-east-1"  # Change to your preferred region
+  # Using default credentials or environment variables
+  
+  # For account 000000000000
+  alias = "source_account"
+}
+
+provider "aws" {
+  region = "us-east-1"  # Change to your preferred region
+  
+  # For account 111111111111
+  alias = "target_account"
+  
+  assume_role {
+    role_arn = "arn:aws:iam::111111111111:role/OrganizationAccountAccessRole"  # Ensure this role exists
+  }
+}
+
+# iam_groups_users.tf - Step 1
+# Create IAM groups in account 000000000000
+resource "aws_iam_group" "cli_access_group" {
+  provider = aws.source_account
+  name     = "group1"
+  path     = "/"
+}
+
+resource "aws_iam_group" "full_access_group" {
+  provider = aws.source_account
+  name     = "group2"
+  path     = "/"
+}
+
+# Create IAM policy for CLI-only access
+resource "aws_iam_policy" "cli_only_policy" {
+  provider    = aws.source_account
+  name        = "cli-only-access"
+  description = "Policy that grants access only via CLI"
+  
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "ec2:Describe*",
+          "s3:List*",
+          "s3:Get*",
+          # Add other read-only actions as needed
+        ],
+        Resource = "*",
+        Condition = {
+          Bool = {
+            "aws:ViaAWSService": "false"
+          }
+        }
+      },
+      {
+        Effect = "Deny",
+        Action = "*",
+        Resource = "*",
+        Condition = {
+          Bool = {
+            "aws:ViaConsole": "true"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Create IAM policy for full users
+resource "aws_iam_policy" "full_access_policy" {
+  provider    = aws.source_account
+  name        = "full-user-access"
+  description = "Policy for users with full access"
+  
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "ec2:*",
+          "s3:*",
+          "dynamodb:*",
+          "cloudwatch:*",
+          "logs:*",
+          # Add other services as needed
+        ],
+        Resource = "*"
+      },
+      {
+        Effect   = "Deny",
+        Action   = [
+          "iam:*"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attach policy to CLI-only group
+resource "aws_iam_group_policy_attachment" "cli_group_policy" {
+  provider   = aws.source_account
+  group      = aws_iam_group.cli_access_group.name
+  policy_arn = aws_iam_policy.cli_only_policy.arn
+}
+
+# Attach policy to full access group
+resource "aws_iam_group_policy_attachment" "full_group_policy" {
+  provider   = aws.source_account
+  group      = aws_iam_group.full_access_group.name
+  policy_arn = aws_iam_policy.full_access_policy.arn
+}
+
+# Create CLI-only users
+resource "aws_iam_user" "engine_user" {
+  provider = aws.source_account
+  name     = "engine"
+  path     = "/"
+  
+  tags = {
+    Description = "User for CI/CD engine"
+  }
+}
+
+resource "aws_iam_user" "ci_user" {
+  provider = aws.source_account
+  name     = "ci"
+  path     = "/"
+  
+  tags = {
+    Description = "User for CI system"
+  }
+}
+
+# Create full access users
+resource "aws_iam_user" "john_doe" {
+  provider = aws.source_account
+  name     = "John_Doe"
+  path     = "/"
+  
+  tags = {
+    Description = "Full access user"
+  }
+}
+
+resource "aws_iam_user" "aboubacar_maina" {
+  provider = aws.source_account
+  name     = "Aboubacar_Maina"
+  path     = "/"
+  
+  tags = {
+    Description = "Full access user"
+  }
+}
+
+# Add users to groups
+resource "aws_iam_group_membership" "cli_group_members" {
+  provider = aws.source_account
+  name     = "cli-group-membership"
+  
+  users = [
+    aws_iam_user.engine_user.name,
+    aws_iam_user.ci_user.name
+  ]
+  
+  group = aws_iam_group.cli_access_group.name
+}
+
+resource "aws_iam_group_membership" "full_group_members" {
+  provider = aws.source_account
+  name     = "full-group-membership"
+  
+  users = [
+    aws_iam_user.john_doe.name,
+    aws_iam_user.aboubacar_maina.name
+  ]
+  
+  group = aws_iam_group.full_access_group.name
+}
+
+# iam_roles.tf - Step 2
+# Create administrative role in account 000000000000
+resource "aws_iam_role" "role_a" {
+  provider = aws.source_account
+  name     = "roleA"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = {
+          AWS = "arn:aws:iam::000000000000:root"
+        },
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+  
+  tags = {
+    Description = "Administrative role with access to all AWS services except IAM"
+  }
+}
+
+# Administrative role policy (all services except IAM)
+resource "aws_iam_policy" "role_a_policy" {
+  provider    = aws.source_account
+  name        = "roleA-policy"
+  description = "Policy for roleA - all services except IAM"
+  
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = "*",
+        Resource = "*"
+      },
+      {
+        Effect   = "Deny",
+        Action   = "iam:*",
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# Attach policy to roleA
+resource "aws_iam_role_policy_attachment" "role_a_attachment" {
+  provider   = aws.source_account
+  role       = aws_iam_role.role_a.name
+  policy_arn = aws_iam_policy.role_a_policy.arn
+}
+
+# Create service role in account 000000000000 that can assume roleC in account 111111111111
+resource "aws_iam_role" "role_b" {
+  provider = aws.source_account
+  name     = "roleB"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = {
+          AWS = "arn:aws:iam::000000000000:root"
+        },
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+  
+  tags = {
+    Description = "Service role that can assume roleC in account 111111111111"
+  }
+}
+
+# Policy allowing roleB to assume roleC in account 111111111111
+resource "aws_iam_policy" "role_b_policy" {
+  provider    = aws.source_account
+  name        = "roleB-policy"
+  description = "Policy allowing roleB to assume roleC in account 111111111111"
+  
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = "sts:AssumeRole",
+        Resource = "arn:aws:iam::111111111111:role/roleC"
+      }
+    ]
+  })
+}
+
+# Attach policy to roleB
+resource "aws_iam_role_policy_attachment" "role_b_attachment" {
+  provider   = aws.source_account
+  role       = aws_iam_role.role_b.name
+  policy_arn = aws_iam_policy.role_b_policy.arn
+}
+
+# cross_account_role.tf - Step 3
+# Create roleC in account 111111111111
+resource "aws_iam_role" "role_c" {
+  provider = aws.target_account
+  name     = "roleC"
+  
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = {
+          AWS = "arn:aws:iam::000000000000:role/roleB"
+        },
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+  
+  tags = {
+    Description = "Service role with S3 access that can be assumed by roleB from account 000000000000"
+  }
+}
+
+# Policy for roleC to access the specified S3 bucket
+resource "aws_iam_policy" "role_c_policy" {
+  provider    = aws.target_account
+  name        = "roleC-policy"
+  description = "Policy allowing full access to the aws-test-bucket"
+  
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "s3:*"
+        ],
+        Resource = [
+          "arn:aws:s3:::aws-test-bucket",
+          "arn:aws:s3:::aws-test-bucket/*"
+        ]
+      }
+    ]
+  })
+}
+
+# Attach policy to roleC
+resource "aws_iam_role_policy_attachment" "role_c_attachment" {
+  provider   = aws.target_account
+  role       = aws_iam_role.role_c.name
+  policy_arn = aws_iam_policy.role_c_policy.arn
+}
+
+# Output important information
+output "cli_users" {
+  value = [aws_iam_user.engine_user.name, aws_iam_user.ci_user.name]
+}
+
+output "full_users" {
+  value = [aws_iam_user.john_doe.name, aws_iam_user.aboubacar_maina.name]
+}
+
+output "role_a_arn" {
+  value = aws_iam_role.role_a.arn
+}
+
+output "role_b_arn" {
+  value = aws_iam_role.role_b.arn
+}
+
+output "role_c_arn" {
+  value = aws_iam_role.role_c.arn
+}

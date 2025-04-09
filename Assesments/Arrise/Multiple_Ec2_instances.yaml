@@ -1,0 +1,165 @@
+# main.tf
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  required_version = ">= 1.2.0"
+}
+
+variable "instances" {
+  description = "Configuration for multiple EC2 instances"
+  type = list(object({
+    name          = string
+    instance_type = string
+    volume_type   = string
+    volume_size   = number
+    key_name      = string
+    tags          = map(string)
+  }))
+  
+  validation {
+    condition = length(var.instances) > 0
+    error_message = "At least one instance configuration must be provided."
+  }
+  
+  validation {
+    condition = alltrue([for i in var.instances : contains(["gp2", "gp3", "io1", "io2", "sc1", "st1", "standard"], i.volume_type)])
+    error_message = "Volume type must be one of: gp2, gp3, io1, io2, sc1, st1, standard."
+  }
+  
+  validation {
+    condition = alltrue([for i in var.instances : i.volume_size >= 8 && i.volume_size <= 16384])
+    error_message = "Volume size must be between 8 and 16384 GiB."
+  }
+  
+  default = [
+    {
+      name          = "app-server-1"
+      instance_type = "t2.micro"
+      volume_type   = "gp2"
+      volume_size   = 8
+      key_name      = "key1"
+      tags          = { Environment = "dev", Application = "web" }
+    },
+    {
+      name          = "app-server-2"
+      instance_type = "t3.medium"
+      volume_type   = "gp3"
+      volume_size   = 10
+      key_name      = "key2"
+      tags          = { Environment = "dev", Application = "api" }
+    },
+    {
+      name          = "db-server-1"
+      instance_type = "m5.large"
+      volume_type   = "io1"
+      volume_size   = 20
+      key_name      = "key1"
+      tags          = { Environment = "dev", Application = "database" }
+    },
+    {
+      name          = "worker-1"
+      instance_type = "c5.large"
+      volume_type   = "gp3"
+      volume_size   = 15
+      key_name      = "key3"
+      tags          = { Environment = "dev", Application = "worker" }
+    },
+    {
+      name          = "monitoring"
+      instance_type = "t3.small"
+      volume_type   = "gp2"
+      volume_size   = 12
+      key_name      = "key2"
+      tags          = { Environment = "dev", Application = "monitoring" }
+    }
+  ]
+}
+
+variable "ami_id" {
+  description = "AMI ID to use for the EC2 instances"
+  type        = string
+  default     = "ami-0123456789abcdef0" # Replace with actual AMI ID
+}
+
+variable "subnet_id" {
+  description = "Subnet ID where instances will be created"
+  type        = string
+}
+
+variable "vpc_security_group_ids" {
+  description = "List of security group IDs"
+  type        = list(string)
+  default     = []
+}
+
+# Use a data source to find the latest Amazon Linux 2 AMI if no specific AMI is provided
+data "aws_ami" "amazon_linux_2" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+resource "aws_instance" "servers" {
+  for_each = { for idx, instance in var.instances : instance.name => instance }
+
+  ami                    = var.ami_id != "ami-0123456789abcdef0" ? var.ami_id : data.aws_ami.amazon_linux_2.id
+  instance_type          = each.value.instance_type
+  subnet_id              = var.subnet_id
+  vpc_security_group_ids = var.vpc_security_group_ids
+  key_name               = each.value.key_name
+
+  root_block_device {
+    volume_type = each.value.volume_type
+    volume_size = each.value.volume_size
+    encrypted   = true
+    delete_on_termination = true
+  }
+
+  tags = merge(
+    {
+      Name = each.key
+    },
+    each.value.tags
+  )
+
+  lifecycle {
+    prevent_destroy = false  # Change to true in production to prevent accidental deletion
+  }
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"  # IMDSv2 is required for better security
+    http_put_response_hop_limit = 1
+  }
+}
+
+# Output to get instance IDs
+output "instance_ids" {
+  description = "IDs of the created EC2 instances"
+  value       = { for k, v in aws_instance.servers : k => v.id }
+}
+
+# Output to get private IPs
+output "private_ips" {
+  description = "Private IPs of the created EC2 instances"
+  value       = { for k, v in aws_instance.servers : k => v.private_ip }
+}
+
+# Output to get public IPs if applicable
+output "public_ips" {
+  description = "Public IPs of the created EC2 instances (if applicable)"
+  value       = { for k, v in aws_instance.servers : k => v.public_ip }
+}
